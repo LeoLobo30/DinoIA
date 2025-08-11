@@ -30,6 +30,7 @@ def restart_game():
     body.send_keys(Keys.RETURN)  # Ou Keys.SPACE se o jogo reiniciar com 'Espaço'
 
 def capture_screen():
+    screenshot = None
     try:
         canvas = driver.find_element(by=By.TAG_NAME, value="canvas")
         screenshot = Image.open(BytesIO(canvas.screenshot_as_png))

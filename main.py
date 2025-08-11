@@ -10,13 +10,13 @@ def main():
     thread.start()
 
     for text in extract_text_from_image():
-        if "COMEÇAR" or "COMEGAR" or "COMECAR" in text:
+        if ("COMEÇAR" in text) or ("COMEGAR" in text) or ("COMECAR" in text):
             jump()
 
     while True:
         for text in extract_text_from_image():
-            if "A M E" or "M E" in text:
-                restart_game() 
+            if ("A M E" in text) or ("M E" in text):
+                restart_game()
 
 if __name__ == "__main__":
     main()
