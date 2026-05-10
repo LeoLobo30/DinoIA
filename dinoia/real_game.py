@@ -103,9 +103,12 @@ class DinoRealGameRunner:
                 sleep_for = max(0.0, frame_interval - (time.time() - now))
                 time.sleep(sleep_for)
         finally:
-            self.controller.release_duck()
-            if self.real_config.debug:
-                cv2.destroyAllWindows()
+            try:
+                self.controller.release_duck()
+                if self.real_config.debug:
+                    cv2.destroyAllWindows()
+            finally:
+                self._close_capture()
 
         return self.stats
 
@@ -116,5 +119,10 @@ class DinoRealGameRunner:
             self.stats.ducks += 1
         else:
             self.stats.noops += 1
+
+    def _close_capture(self) -> None:
+        close = getattr(self.capture, "close", None)
+        if callable(close):
+            close()
 
 

@@ -21,11 +21,17 @@ class KeyboardController:
             import pyautogui
 
             pyautogui.FAILSAFE = False
+            pyautogui.PAUSE = 0
+            for attr in ("MINIMUM_DURATION", "MINIMUM_SLEEP"):
+                if hasattr(pyautogui, attr):
+                    setattr(pyautogui, attr, 0)
             self._pyautogui = pyautogui
         return self._pyautogui
 
     def jump(self) -> None:
-        self._module().press("space")
+        module = self._module()
+        module.keyDown("space")
+        module.keyUp("space")
 
     def duck(self) -> None:
         self._module().keyDown("down")
@@ -35,7 +41,9 @@ class KeyboardController:
         self._ducking = False
 
     def restart(self) -> None:
-        self._module().press("space")
+        module = self._module()
+        module.keyDown("space")
+        module.keyUp("space")
 
     def perform(self, action: PolicyAction) -> ControlResult:
         if action is PolicyAction.JUMP:

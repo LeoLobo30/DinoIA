@@ -1,6 +1,5 @@
 param(
-    [string]$PythonExe = $null,
-    [switch]$UseCuda
+    [string]$PythonExe = $null
 )
 
 $ErrorActionPreference = "Stop"
@@ -39,14 +38,6 @@ Write-Host "Upgrading pip inside the venv..."
 
 Write-Host "Installing project dependencies..."
 & $pip -m pip install -r (Join-Path $PSScriptRoot "requirements.txt")
-
-if ($UseCuda) {
-    Write-Host "Installing PyTorch GPU build..."
-    & $pip -m pip install torch==2.9.1+cu128 torchvision==0.24.1+cu128 torchaudio==2.9.1+cu128 --index-url https://download.pytorch.org/whl/cu128
-} else {
-    Write-Host "Installing PyTorch CPU build..."
-    & $pip -m pip install torch torchvision torchaudio
-}
 
 Write-Host ""
 Write-Host "Running a quick doctor check..."

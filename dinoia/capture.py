@@ -12,6 +12,7 @@ class DinoScreenCapture:
     def __init__(self, config: RealGameConfig):
         self.config = config
         self._region_cache: ScreenRegion | None = None
+        self._mss = None
 
     def resolve_region(self) -> ScreenRegion:
         if self.config.manual_region is not None:
@@ -78,16 +79,33 @@ class DinoScreenCapture:
         user32.SetActiveWindow(hwnd)
 
     def capture(self) -> np.ndarray:
+        region = self.resolve_region()
+        sct = self._ensure_mss()
+        shot = sct.grab(region.as_mss())
+        frame = np.array(shot, dtype=np.uint8)
+        return frame[:, :, :3].copy()
+
+    def close(self) -> None:
+        mss_instance = self._mss
+        self._mss = None
+        if mss_instance is None:
+            return
+
+        close = getattr(mss_instance, "close", None)
+        if callable(close):
+            close()
+
+    def _ensure_mss(self):
+        if self._mss is not None:
+            return self._mss
+
         try:
             from mss import mss
         except Exception as exc:  # pragma: no cover - optional runtime dependency
             raise RuntimeError("mss is required for screen capture.") from exc
 
-        region = self.resolve_region()
-        with mss() as sct:
-            shot = sct.grab(region.as_mss())
-            frame = np.array(shot, dtype=np.uint8)
-            return frame[:, :, :3].copy()
+        self._mss = mss()
+        return self._mss
 
     def _find_window_region(self, candidates: Sequence[str]) -> ScreenRegion | None:
         try:

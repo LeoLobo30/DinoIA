@@ -149,7 +149,9 @@ class DinoVisionAnalyzer:
                 continue
             if rect.x > min(self.config.max_player_x_px, int(width * self.config.max_player_x_fraction)):
                 continue
-            if rect.bottom < ground_y - self.config.max_player_airborne_gap_px or rect.y > ground_y + 25:
+            if rect.bottom < ground_y - self.config.player_ground_band_px:
+                continue
+            if rect.bottom > ground_y + 18:
                 continue
             if rect.w > min(self.config.max_player_width_px, int(width * 0.18)):
                 continue
@@ -186,7 +188,7 @@ class DinoVisionAnalyzer:
                     candidates = stable_candidates
                 else:
                     return previous
-            best = min(candidates, key=lambda rect: (abs(rect.bottom - ground_y), rect.x, -rect.area))
+            best = min(candidates, key=lambda rect: (ground_y - rect.bottom if rect.bottom <= ground_y else 999, rect.x, -rect.area))
             self._tracker.player_box = best
             return best
 

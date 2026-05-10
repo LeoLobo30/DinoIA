@@ -79,3 +79,4 @@ def test_real_action_gate_blocks_spam_and_airborne_actions():
     assert gate.filter(PolicyAction.JUMP, grounded=True, now=1.0) == PolicyAction.JUMP
     assert gate.filter(PolicyAction.JUMP, grounded=True, now=1.2) == PolicyAction.NOOP
     assert gate.filter(PolicyAction.JUMP, grounded=True, now=1.7) == PolicyAction.JUMP
+

@@ -1,11 +1,11 @@
-from .config import DinoVisionConfig, RealGameConfig, SimConfig, TrainingConfig
+from .config import DinoVisionConfig, NeatConfig, RealGameConfig, SimConfig
 from .types import ObstacleDetection, PolicyAction, Rect, VisionState
 
 __all__ = [
     "DinoVisionConfig",
     "RealGameConfig",
     "SimConfig",
-    "TrainingConfig",
+    "NeatConfig",
     "ObstacleDetection",
     "PolicyAction",
     "Rect",

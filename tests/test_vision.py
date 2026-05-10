@@ -200,6 +200,30 @@ def test_detector_rejects_mid_height_player_artifact():
     assert state.player_box.w < 60
 
 
+def test_detector_prefers_ground_player_over_high_left_artifact():
+    analyzer = DinoVisionAnalyzer(
+        DinoVisionConfig(
+            playfield_top_ratio=0.0,
+            playfield_bottom_ratio=1.0,
+            player_search_fraction=0.7,
+            max_player_x_px=220,
+            min_player_area=40,
+            min_obstacle_area=40,
+        )
+    )
+
+    frame = np.full((260, 420, 3), 255, dtype=np.uint8)
+    cv2.line(frame, (0, 221), (419, 221), (0, 0, 0), 2)
+    cv2.rectangle(frame, (42, 157), (74, 213), (0, 0, 0), -1)
+    cv2.rectangle(frame, (42, 78), (86, 128), (0, 0, 0), -1)
+    cv2.rectangle(frame, (260, 156), (290, 213), (0, 0, 0), -1)
+
+    state = analyzer.analyze(frame, timestamp=1.0)
+
+    assert state.player_box.bottom >= state.ground_y - 20
+    assert state.player_box.y > 120
+
+
 def test_detector_rejects_wide_standing_player_artifact():
     analyzer = DinoVisionAnalyzer(
         DinoVisionConfig(
@@ -249,4 +273,5 @@ def test_detector_rejects_implausible_vertical_player_jump():
 
     state = analyzer.analyze(artifact, timestamp=1.1)
 
-    assert state.player_box.y < 80
+    assert state.player_box.bottom >= state.ground_y - 20
+    assert state.player_box.y > 120

@@ -8,8 +8,10 @@ import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
 
-from ..config import SimConfig
+from ..config import DinoVisionConfig, SimConfig
+from ..decision import DinoRulePolicy
 from ..observations import OBSERVATION_SIZE, build_dino_observation
+from ..types import ObstacleDetection, PolicyAction, Rect, VisionState
 
 
 @dataclass(slots=True)
@@ -38,7 +40,7 @@ class SimObstacle:
         return self.y + self.h
 
 
-class DinoSimEnv(gym.Env):
+class DinoEnv(gym.Env):
     metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 60}
 
     def __init__(self, config: SimConfig | None = None, render_mode: str | None = None):
@@ -61,7 +63,7 @@ class DinoSimEnv(gym.Env):
         self._episode_return = 0.0
         self._last_render: np.ndarray | None = None
         self._episode_base_speed = float(self.config.base_speed)
-        self._episode_speed_increment = float(self.config.speed_increment)
+        self._episode_speed_acceleration = float(self.config.speed_acceleration)
         self._episode_max_speed = float(self.config.max_speed)
         self._episode_gravity = float(self.config.gravity)
         self._episode_jump_velocity = float(self.config.jump_velocity)
@@ -70,6 +72,8 @@ class DinoSimEnv(gym.Env):
         self._episode_max_spawn_gap_px = int(self.config.max_spawn_gap_px)
         self._episode_obstacle_scale = 1.0
         self._episode_observation_noise = float(self.config.observation_noise)
+        self._action_buffer: list[int] = []
+        self._observation_buffer: list[np.ndarray] = []
 
     def reset(self, *, seed: int | None = None, options: dict[str, Any] | None = None):
         super().reset(seed=seed)
@@ -82,28 +86,40 @@ class DinoSimEnv(gym.Env):
         self.elapsed_steps = 0
         self.passed_obstacles = 0
         self._episode_return = 0.0
+        self._episode_elapsed_time = 0.0
         self._obstacles = []
         self._sample_episode_parameters()
-        self._spawn_timer = self._sample_spawn_gap() / self.current_speed
-
-        self._spawn_initial_obstacles()
+        self._spawn_timer = max(float(self.config.initial_obstacle_delay_s), self._next_spawn_delay())
         observation = self._get_observation()
+        self._reset_latency_buffers(observation)
         info = {"speed": self.current_speed, "passed_obstacles": self.passed_obstacles}
         return observation, info
 
     def step(self, action: int):
         self.elapsed_steps += 1
-        dt = 1.0 / 60.0
+        policy_dt = float(self.config.step_interval_s)
+        physics_dt = float(self.config.physics_step_interval_s)
+        substeps = max(1, int(round(policy_dt / max(1e-6, physics_dt))))
+        requested_action = int(action)
+        executed_action = self._delay_action(requested_action)
+        self._apply_action(executed_action)
 
-        self._apply_action(int(action))
-        self._advance_player(dt)
-        self._advance_obstacles(dt)
-        self._maybe_spawn_obstacle()
+        collision = False
+        passed_now = False
+        for _ in range(substeps):
+            self._advance_player(physics_dt)
+            self._advance_obstacles(physics_dt)
+            self._maybe_spawn_obstacle(physics_dt)
+            self._episode_elapsed_time += physics_dt
+            passed_now = self._consume_pass_rewards() or passed_now
+            collision = self._check_collision()
+            if collision:
+                break
 
-        collision = self._check_collision()
         reward = self.config.survival_reward
-        if self._consume_pass_rewards():
+        if passed_now:
             reward += self.config.pass_reward
+        reward += self._action_shaping_reward(requested_action)
 
         terminated = False
         if collision:
@@ -120,6 +136,8 @@ class DinoSimEnv(gym.Env):
             "passed_obstacles": self.passed_obstacles,
             "collision": collision,
             "episode_return": self._episode_return,
+            "requested_action": requested_action,
+            "executed_action": executed_action,
         }
         return observation, reward, terminated, truncated, info
 
@@ -137,7 +155,7 @@ class DinoSimEnv(gym.Env):
 
     @property
     def current_speed(self) -> float:
-        speed = self._episode_base_speed + self.passed_obstacles * self._episode_speed_increment
+        speed = self._episode_base_speed + self._episode_elapsed_time * self._episode_speed_acceleration
         return float(min(self._episode_max_speed, speed))
 
     def spawn_obstacle(
@@ -174,10 +192,11 @@ class DinoSimEnv(gym.Env):
             self.ducking = False
             return
 
-        if action == 2 and self.grounded:
-            self.ducking = True
-        elif self.grounded:
-            self.ducking = False
+        if self.grounded:
+            if action == 2:
+                self.ducking = True
+            elif action == 0:
+                self.ducking = False
 
     def _advance_player(self, dt: float) -> None:
         if not self.grounded:
@@ -197,13 +216,13 @@ class DinoSimEnv(gym.Env):
         for obstacle in self._obstacles:
             obstacle.x -= speed * dt
 
-    def _maybe_spawn_obstacle(self) -> None:
-        self._spawn_timer -= 1.0 / 60.0
+    def _maybe_spawn_obstacle(self, dt: float) -> None:
+        self._spawn_timer -= dt
         if self._spawn_timer > 0:
             return
         kind = "bird" if self.np_random.random() < self._episode_bird_probability and self.current_speed > 360 else "cactus"
         self.spawn_obstacle(kind=kind)
-        self._spawn_timer = self._sample_spawn_gap() / self.current_speed
+        self._spawn_timer = self._next_spawn_delay()
 
     def _sample_spawn_gap(self) -> float:
         min_gap = self._episode_min_spawn_gap_px
@@ -212,16 +231,18 @@ class DinoSimEnv(gym.Env):
             max_gap = min_gap + 20
         return float(self.np_random.integers(min_gap, max_gap + 1))
 
-    def _spawn_initial_obstacles(self) -> None:
-        self._spawn_timer = self._sample_spawn_gap() / self.current_speed
-        if self.np_random.random() < 0.5:
-            self.spawn_obstacle(kind="cactus", x=self.config.screen_width * 0.75)
+    def _next_spawn_delay(self) -> float:
+        gap_px = self._sample_spawn_gap() * float(self.config.gap_coefficient)
+        return gap_px / max(1.0, self.current_speed)
 
     def _check_collision(self) -> bool:
-        player = self._player_rect()
+        player_boxes = self._player_collision_boxes()
         for obstacle in self._obstacles:
-            if self._intersects(player, obstacle):
-                return True
+            obstacle_boxes = self._obstacle_collision_boxes(obstacle)
+            for player_box in player_boxes:
+                for obstacle_box in obstacle_boxes:
+                    if self._rects_intersect(player_box, obstacle_box):
+                        return True
         return False
 
     def _consume_pass_rewards(self) -> bool:
@@ -238,6 +259,20 @@ class DinoSimEnv(gym.Env):
         self._obstacles = remaining
         return passed_now
 
+    def _reset_latency_buffers(self, observation: np.ndarray) -> None:
+        action_latency = max(0, int(self.config.action_latency_steps))
+        observation_latency = max(0, int(self.config.observation_latency_steps))
+        self._action_buffer = [0] * action_latency
+        self._observation_buffer = [observation.copy() for _ in range(observation_latency)]
+
+    def _delay_action(self, action: int) -> int:
+        if not self._action_buffer:
+            return action
+
+        delayed_action = self._action_buffer.pop(0)
+        self._action_buffer.append(action)
+        return delayed_action
+
     def _player_rect(self) -> tuple[float, float, float, float]:
         height = self.player_height
         return float(self.config.player_x), float(self.player_y), float(self.config.player_width), float(height)
@@ -246,15 +281,32 @@ class DinoSimEnv(gym.Env):
     def player_height(self) -> int:
         return self.config.duck_height if self.ducking and self.grounded else self.config.stand_height
 
+    def _player_collision_boxes(self) -> list[Rect]:
+        px, py, _, _ = self._player_rect()
+        if self.ducking and self.grounded:
+            return [Rect(int(px + 1), int(py + 18), 55, 25)]
+        return [Rect(int(px + 22), int(py + 0), 17, 16)]
+
     @staticmethod
-    def _intersects(player: tuple[float, float, float, float], obstacle: SimObstacle) -> bool:
-        px, py, pw, ph = player
+    def _rects_intersect(a: Rect, b: Rect) -> bool:
         return not (
-            px + pw <= obstacle.left
-            or obstacle.right <= px
-            or py + ph <= obstacle.top
-            or obstacle.bottom <= py
+            a.right <= b.x
+            or b.right <= a.x
+            or a.bottom <= b.y
+            or b.bottom <= a.y
         )
+
+    def _obstacle_collision_boxes(self, obstacle: SimObstacle) -> list[Rect]:
+        rect = Rect(int(obstacle.left), int(obstacle.top), int(obstacle.w), int(obstacle.h))
+        if obstacle.kind == "bird":
+            pad_x = max(1, rect.w // 10)
+            pad_y = max(1, rect.h // 5)
+            return [Rect(rect.x + pad_x, rect.y + pad_y, max(1, rect.w - pad_x * 2), max(1, rect.h - pad_y * 2))]
+
+        inset_x = max(1, rect.w // 8)
+        inset_top = max(1, rect.h // 12)
+        inset_bottom = max(1, rect.h // 10)
+        return [Rect(rect.x + inset_x, rect.y + inset_top, max(1, rect.w - inset_x * 2), max(1, rect.h - inset_top - inset_bottom))]
 
     def _obstacles_ahead(self) -> list[SimObstacle]:
         player = self._player_rect()
@@ -295,12 +347,82 @@ class DinoSimEnv(gym.Env):
         if self._episode_observation_noise > 0:
             noise = self.np_random.normal(0.0, self._episode_observation_noise, size=obs.shape).astype(np.float32)
             obs = np.clip(obs + noise, 0.0, 1.0).astype(np.float32)
-        return obs
+        return self._delay_observation(obs)
+
+    def _action_shaping_reward(self, action: int) -> float:
+        if not self.config.enable_teacher_shaping:
+            return 0.0
+
+        teacher_action = DinoRulePolicy(DinoVisionConfig(min_action_interval_s=0.0)).decide(
+            self._teacher_state(),
+            now=float(self.elapsed_steps) * float(self.config.step_interval_s),
+        ).action
+        if teacher_action is PolicyAction.NOOP:
+            if action == 1:
+                return self.config.unnecessary_jump_penalty
+            if action == 2:
+                return self.config.unnecessary_duck_penalty
+            return 0.0
+
+        if action == int(self._policy_action_index(teacher_action)):
+            return self.config.teacher_match_reward
+        if action == 0:
+            return self.config.missed_action_penalty
+        return self.config.teacher_mismatch_penalty
+
+    @staticmethod
+    def _policy_action_index(action: PolicyAction) -> int:
+        if action is PolicyAction.JUMP:
+            return 1
+        if action is PolicyAction.DUCK:
+            return 2
+        return 0
+
+    def _teacher_state(self) -> VisionState:
+        frame = np.zeros((self.config.screen_height, self.config.screen_width, 3), dtype=np.uint8)
+        playfield = frame.copy()
+        player_x, player_y, player_w, player_h = self._player_rect()
+        player_box = Rect(int(player_x), int(player_y), int(player_w), int(player_h))
+        obstacles = [self._teacher_obstacle(obstacle, player_box) for obstacle in self._obstacles]
+        obstacles = [obstacle for obstacle in obstacles if obstacle is not None]
+        nearest = obstacles[0] if obstacles else None
+        return VisionState(
+            timestamp=self._episode_elapsed_time,
+            frame=frame,
+            playfield=playfield,
+            player_box=player_box,
+            ground_y=int(self.floor_y),
+            obstacles=obstacles,
+            nearest_obstacle=nearest,
+            nearest_distance_px=nearest.distance_px if nearest is not None else None,
+            estimated_speed_px_s=self.current_speed,
+            estimated_player_vy_px_s=float(self.player_vy),
+            game_over=False,
+        )
+
+    @staticmethod
+    def _teacher_obstacle(obstacle: SimObstacle, player_box: Rect) -> ObstacleDetection | None:
+        rect = Rect(int(obstacle.left), int(obstacle.top), int(obstacle.w), int(obstacle.h))
+        if rect.right < player_box.x - 40:
+            return None
+        return ObstacleDetection(
+            rect=rect,
+            label=obstacle.kind,
+            distance_px=max(0.0, float(rect.x - player_box.right)),
+            speed_px_s=0.0,
+        )
+
+    def _delay_observation(self, observation: np.ndarray) -> np.ndarray:
+        if not self._observation_buffer:
+            return observation
+
+        self._observation_buffer.append(observation)
+        return self._observation_buffer.pop(0)
 
     def _sample_episode_parameters(self) -> None:
         if not self.config.domain_randomization:
             self._episode_base_speed = float(self.config.base_speed)
-            self._episode_speed_increment = float(self.config.speed_increment)
+            self._episode_speed_acceleration = float(self.config.speed_acceleration)
             self._episode_max_speed = float(self.config.max_speed)
             self._episode_gravity = float(self.config.gravity)
             self._episode_jump_velocity = float(self.config.jump_velocity)
@@ -313,7 +435,7 @@ class DinoSimEnv(gym.Env):
 
         strength = float(max(0.0, self.config.domain_randomization_strength))
         self._episode_base_speed = self._sample_scaled_value(self.config.base_speed, strength)
-        self._episode_speed_increment = self._sample_scaled_value(self.config.speed_increment, strength * 0.5)
+        self._episode_speed_acceleration = self._sample_scaled_value(self.config.speed_acceleration, strength * 0.45)
         sampled_max_speed = self._sample_scaled_value(self.config.max_speed, strength * 0.2)
         self._episode_max_speed = max(self._episode_base_speed + 120.0, sampled_max_speed)
         self._episode_gravity = self._sample_scaled_value(self.config.gravity, strength * 0.35)
@@ -375,3 +497,8 @@ class DinoSimEnv(gym.Env):
             cv2.LINE_AA,
         )
         return frame
+
+
+# Compatibility alias kept for older imports/tests while DinoEnv becomes the
+# canonical Gymnasium environment used by the PPO path.
+DinoSimEnv = DinoEnv

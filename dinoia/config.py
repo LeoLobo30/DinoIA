@@ -27,6 +27,7 @@ class DinoVisionConfig:
     max_player_airborne_gap_px: int = 130
     max_player_center_jump_px: int = 45
     max_player_vertical_jump_px: int = 90
+    player_ground_band_px: int = 80
     player_search_fraction: float = 0.33
     ground_search_fraction: float = 0.58
     obstacle_top_margin_px: int = 120
@@ -62,49 +63,76 @@ class SimConfig:
     screen_width: int = 600
     screen_height: int = 200
     ground_height: int = 36
+    step_interval_s: float = 1.0 / 30.0
+    physics_step_interval_s: float = 1.0 / 60.0
     player_x: int = 70
     player_width: int = 30
-    stand_height: int = 44
-    duck_height: int = 28
-    gravity: float = 2200.0
-    jump_velocity: float = 780.0
-    base_speed: float = 320.0
-    max_speed: float = 920.0
+    stand_height: int = 47
+    duck_height: int = 25
+    gravity: float = 2160.0
+    jump_velocity: float = 600.0
+    base_speed: float = 360.0
+    max_speed: float = 780.0
+    speed_acceleration: float = 3.6
     speed_increment: float = 7.5
     survival_reward: float = 0.03
     pass_reward: float = 0.7
     collision_penalty: float = -1.0
     max_episode_steps: int = 3000
+    initial_obstacle_delay_s: float = 3.0
     min_spawn_gap_px: int = 240
     max_spawn_gap_px: int = 520
+    gap_coefficient: float = 0.6
     bird_probability: float = 0.18
     domain_randomization: bool = True
     domain_randomization_strength: float = 0.12
     observation_noise: float = 0.02
+    action_latency_steps: int = 0
+    observation_latency_steps: int = 0
+    survival_reward: float = 0.03
+    pass_reward: float = 0.7
+    collision_penalty: float = -1.0
+    action_penalty: float = -0.002
+    unnecessary_jump_penalty: float = -0.05
+    unnecessary_duck_penalty: float = -0.06
+    missed_action_penalty: float = -0.15
+    teacher_match_reward: float = 0.08
+    teacher_mismatch_penalty: float = -0.08
+    enable_teacher_shaping: bool = True
     seed: int = 42
 
 
 @dataclass(slots=True)
-class TrainingConfig:
-    total_timesteps: int = 120_000
-    preset: str = "standard"
-    resume: str = "auto"
-    fresh: bool = False
-    device: str = "auto"
-    learning_rate: float = 3e-4
-    gamma: float = 0.995
-    buffer_size: int = 200_000
-    learning_starts: int = 5_000
-    batch_size: int = 128
-    train_freq: int = 4
-    target_update_interval: int = 2_500
-    exploration_fraction: float = 0.35
-    exploration_final_eps: float = 0.02
-    n_eval_episodes: int = 10
-    n_envs: int = 4
+class NeatConfig:
+    generations: int = 20
+    population: int = 24
+    episode_distance_px: float = 2400.0
+    survival_reward: float = 0.005
+    pass_reward: float = 3.0
+    collision_penalty: float = -2.0
+    action_penalty: float = -0.002
+    unnecessary_jump_penalty: float = -0.05
+    unnecessary_duck_penalty: float = -0.04
+    missed_action_penalty: float = -0.5
+    teacher_match_reward: float = 0.08
+    teacher_mismatch_penalty: float = -0.25
+    safety_override_penalty: float = -0.08
+    enable_safety_overrides: bool = True
+    pass_detection_distance_px: float = 90.0
+    pass_confirmation_distance_px: float = 140.0
+    pass_cross_margin_px: float = 18.0
+    safe_jump_distance_px: float = 140.0
+    duck_bird_distance_px: float = 120.0
+    max_episode_frames: int = 3000
+    stalled_death_seconds: float = 0.45
+    stalled_speed_px_s: float = 25.0
+    pass_confirmation_seconds: float = 0.35
+    reset_timeout_seconds: float = 3.0
+    reset_poll_seconds: float = 0.08
     observation_size: int = 13
     seed: int = 42
-    output_dir: Path = field(default_factory=lambda: Path("artifacts") / "dqn")
+    teacher_source: str | None = None
+    output_dir: Path = field(default_factory=lambda: Path("artifacts") / "neat")
 
 
 

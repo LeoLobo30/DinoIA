@@ -1,219 +1,141 @@
 # DinoIA
 
-Refactor profissional do projeto DinoIA em duas frentes:
+Projeto DinoIA com visao computacional para o `chrome://dino` real e treino por PPO com observacoes numericas de 13 valores.
 
-1. um agente de visao computacional para o `chrome://dino` real;
-2. um ambiente simulado proprio, compativel com Gymnasium, para treino com Stable-Baselines3 DQN.
+## Fluxo Principal
 
-## Visao geral
+O caminho recomendado agora e:
 
-O projeto foi reorganizado para separar claramente:
+1. Treinar PPO no simulador `DinoEnv`.
+2. Continuar o treino PPO no Dino real a partir do checkpoint simulado.
+3. Testar o agente PPO puro no Dino real.
+4. Usar a heuristica apenas para diagnostico/comparacao.
 
-- captura de tela;
-- percepcao visual;
-- decisao da politica;
-- controle por teclado;
-- simulacao fisica;
-- treino e avaliacao de RL.
+O fluxo NEAT continua no projeto como legado, mas nao e mais o caminho principal.
 
-O que ficou no nucleo do projeto novo e o stack OpenCV + Gymnasium + Stable-Baselines3. Os scripts antigos de OCR/TensorFlow podem ser vistos como legado de prototipo.
-Os arquivos legados foram mantidos apenas como referencia historica; o fluxo atual fica em `dinoia/` e nos scripts de entrada da raiz.
+## Setup
 
-## Como rodar
-
-Crie e ative um ambiente virtual local:
+Crie e ative o ambiente:
 
 ```powershell
 .\setup_venv.ps1
-```
-
-Se quiser GPU NVIDIA:
-
-```powershell
-.\setup_venv.ps1 -UseCuda
-```
-
-O script termina com um `doctor` automatico para mostrar se o ambiente esta pronto.
-Depois ative o ambiente:
-
-```powershell
 .\.venv\Scripts\Activate.ps1
 ```
 
-### Fluxo recomendado (simulador)
+Verifique dependencias e artefatos:
 
-1. Verifique o ambiente:
-
-```bash
+```powershell
 python -m dinoia doctor
 ```
 
-2. Faca um treino curto de validacao:
+## 1. Treinar PPO No Simulador
 
-```bash
-python -m dinoia train --preset quick --device auto --resume auto
+```powershell
+python -m dinoia train-sim-ppo --total-timesteps 250000
 ```
 
-3. Rode o treino recomendado:
+Esse comando usa `PPO("MlpPolicy", DinoEnv, ...)` com 13 observacoes numericas, sem pixels.
+O simulador agora treina em fases, aplica randomizacao de dominio, ruído de observacao, latencia e recompensa auxiliar da heuristica para aproximar o jogo real sem deixar a politica final depender da heuristica.
 
-```bash
-python -m dinoia train --preset standard --device auto --resume auto
+Artefatos principais:
+
+- `artifacts/ppo/sim_model.zip`
+- `artifacts/ppo/best_sim_model.zip`
+- `artifacts/ppo/sim_training_config.json`
+- `artifacts/ppo/training_history.json`
+- `artifacts/ppo/evaluation_history.json`
+- `artifacts/ppo/latest_eval.json`
+- `artifacts/ppo/latest_summary.txt`
+
+Para validar no simulador:
+
+```powershell
+python -m dinoia eval-sim-ppo --best --episodes 10
+python -m dinoia play-sim-ppo --best --duration 30
 ```
 
-4. Veja o resumo dos artefatos:
+O `eval-sim-ppo` e o comando que decide se um modelo merece virar `best_sim_model.zip`.
 
-```bash
-python -m dinoia results
+## 2. Continuar PPO No Dino Real
+
+Abra o Chrome em `chrome://dino`, maximize a janela e rode:
+
+```powershell
+python -m dinoia train-real-ppo --total-timesteps 5000 --manual-region 1300 70 1200 400
 ```
 
-5. Avalie o melhor modelo salvo:
+Por padrao, esse comando carrega `artifacts/ppo/best_sim_model.zip` quando existir, continua o treino com `DinoRealEnv` e salva:
 
-```bash
-python -m dinoia evaluate --latest
+- `artifacts/ppo/real_model.zip`
+- `artifacts/ppo/best_real_model.zip`
+- `artifacts/ppo/real_training_config.json`
+- `artifacts/ppo/training_history.json`
+- `artifacts/ppo/evaluation_history.json`
+
+## 3. Testar PPO Puro No Dino Real
+
+```powershell
+python -m dinoia play-real-ppo --best --manual-region 1300 70 1200 400
 ```
 
-6. Compare CPU e GPU no seu computador:
+Esse modo usa apenas a politica PPO para escolher `0=noop`, `1=jump` e `2=duck`.
+Nao ha fallback heuristico no comando PPO.
 
-```bash
-python -m dinoia benchmark --timesteps 3000
-```
+## Diagnostico Visual
 
-### Agente real
+Use estes comandos para validar captura, deteccao e controle antes de treinar no jogo real:
 
-Abra o Chrome no `chrome://dino`, maximize a janela e deixe o jogo visivel.
-
-```bash
-python -m dinoia play-real
-```
-
-Se precisar, voce pode informar uma regiao manual:
-
-```bash
+```powershell
+python -m dinoia diagnose-real --duration 10 --manual-region 1300 70 1200 400
 python -m dinoia play-real --manual-region 1300 70 1200 400
 ```
 
-### Jogo e treino juntos
+Sem `--manual-region`, o padrao e `1300 70 1200 400`.
 
-O modo combinado roda o jogo real em modo leve, sem janela de captura, para reduzir travamentos durante o treino.
-Importante: esse comando NAO faz treino de RL usando recompensa do jogo real.
-Ele roda:
-- `play-real` no jogo real;
-- `train` no simulador;
-em paralelo.
+## Resultados
 
-```bash
-python -m dinoia play-and-train --preset standard --manual-region 1300 70 1200 400 --timesteps 60000 --device auto
+```powershell
+python -m dinoia results
 ```
 
-Voce pode trocar o tipo de treino com `--preset quick`, `--preset standard` ou `--preset long`.
+O resumo prioriza PPO, mostra a avaliacao mais recente e a melhor avaliacao, e ainda exibe NEAT apenas como legado, se houver artefatos antigos.
 
-Se quiser acompanhar a captura, adicione `--show-capture`, mas isso deixa o fluxo mais pesado.
+## Atalhos Da Raiz
 
-### Rodar o modelo treinado no jogo real
-
-```bash
-python -m dinoia play-real-rl --latest --manual-region 1300 70 1200 400 --device auto
-```
-
-O fluxo recomendado agora e:
-
-```bash
-python -m dinoia play-real-rl --best --manual-region 1300 70 1200 400 --device auto
-```
-
-Para inspecionar a captura e a observacao usada pelo RL, sem agir no jogo:
-
-```bash
-python -m dinoia diagnose-real --duration 10 --manual-region 1300 70 1200 400
-```
-
-Se voce nao passar `--manual-region`, o fluxo real usa por padrao `1300 70 1200 400`.
-
-### Treino no jogo real (DQN real)
-
-Agora existe treino direto no jogo real:
-
-```bash
-python -m dinoia train-real --timesteps 5000 --device auto --resume auto --no-debug --manual-region 1300 70 1200 400
-```
-
-Esse treino:
-- usa captura real da tela;
-- executa acoes no teclado real;
-- recompensa sobrevivencia e penaliza game over detectado.
-
-Observacoes importantes:
-- e mais lento e mais instavel que treino no simulador;
-- usa apenas 1 ambiente (`n_envs=1`);
-- se interromper com `Ctrl+C`, salva modelo parcial em `artifacts/dqn/dino_real_dqn_interrupted.zip`.
-
-Fluxo pratico recomendado:
-
-1. pre-treinar no simulador
-
-```bash
-python -m dinoia train --preset long --device auto --resume auto
-```
-
-2. ajustar no real a partir do modelo do simulador
-
-```bash
-python -m dinoia train-real --timesteps 5000 --device auto --resume artifacts/dqn/dino_dqn_final.zip --no-debug --manual-region 1300 70 1200 400
-```
-
-3. continuar treino real em blocos
-
-```bash
-python -m dinoia train-real --timesteps 5000 --device auto --resume artifacts/dqn/dino_real_dqn_final.zip --no-debug --manual-region 1300 70 1200 400
-```
-
-
-Se o Chrome estiver maximizado na tela, voce tambem pode usar:
-
-```bash
-python -m dinoia play-real-rl --latest --device auto
-```
-
-### Atalhos da raiz
-
-```bash
+```powershell
 python main.py
-python train_dqn.py
-python evaluate_dqn.py
+python train_ppo.py
+python train_real_ppo.py
+python play_ppo.py
 python doctor.py
 python results.py
-python benchmark.py
+python play_real.py
 ```
 
-`python main.py` agora faz o `doctor` inicial do projeto.
+Wrappers NEAT legados:
+
+```powershell
+python evolve_neat.py
+python play_neat.py
+```
+
+## Comandos NEAT Legados
+
+Ainda estao disponiveis para comparacao:
+
+```powershell
+python -m dinoia evolve-real --generations 20 --population 24 --manual-region 1300 70 1200 400
+python -m dinoia play-real-neat --best --manual-region 1300 70 1200 400
+python -m dinoia train-sim-parallel --generations 20 --population 16 --workers 4
+python -m dinoia play-sim-parallel --best --duration 30
+```
 
 ## Estrutura
 
-- `dinoia/vision.py`: analise visual e bounding boxes.
-- `dinoia/decision.py`: politica heuristica desacoplada da visao.
-- `dinoia/control.py`: controle por teclado.
-- `dinoia/real_game.py`: loop do agente real.
-- `dinoia/real_env.py`: ambiente Gymnasium ligado ao jogo real.
-- `dinoia/sim/env.py`: ambiente Gymnasium com fisica e obstaculos.
-- `dinoia/rl/train.py`: treino com Stable-Baselines3 DQN.
-- `dinoia/rl/train_real.py`: treino DQN usando captura e controle do jogo real.
-- `dinoia/rl/evaluate.py`: avaliacao do modelo treinado.
-
-## Decisoes de projeto
-
-- O agente real usa visao computacional com heuristica robusta em vez de OCR.
-- O agente de RL usa observacao vetorial para treinar mais rapido e de forma mais estavel.
-- O simulador foi pensado para ser simples, deterministico e facil de evoluir.
-
-## Proximos passos naturais
-
-- adicionar um wrapper de registro/env mais completo para multiplos perfis de dificuldade;
-- incluir graficos de treino e metricas de avaliacao;
-- evoluir o detector visual com tracking temporal mais forte, se quiser maior robustez no jogo real.
-
-
-
-
-
-
-
+- `dinoia/ppo_agent.py`: treino, fine-tuning, execucao e resumo dos artefatos PPO.
+- `dinoia/sim/env.py`: `DinoEnv` Gymnasium simulado, registrado como `Dino-v0`.
+- `dinoia/real_env.py`: `DinoRealEnv` Gymnasium real com observacoes numericas.
+- `dinoia/real_rl.py`: construcao das 13 observacoes numericas a partir da visao.
+- `dinoia/vision.py`: deteccao visual e bounding boxes.
+- `dinoia/decision.py`: politica heuristica de diagnostico.
+- `dinoia/neat_agent.py`: fluxo NEAT legado.
