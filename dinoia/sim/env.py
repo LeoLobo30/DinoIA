@@ -8,10 +8,24 @@ import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
 
-from ..config import DinoVisionConfig, SimConfig
-from ..decision import DinoRulePolicy
+from ..config import SimConfig
 from ..observations import OBSERVATION_SIZE, build_dino_observation
-from ..types import ObstacleDetection, PolicyAction, Rect, VisionState
+
+
+@dataclass(slots=True)
+class Rect:
+    x: int
+    y: int
+    w: int
+    h: int
+
+    @property
+    def right(self) -> int:
+        return self.x + self.w
+
+    @property
+    def bottom(self) -> int:
+        return self.y + self.h
 
 
 @dataclass(slots=True)
@@ -21,6 +35,7 @@ class SimObstacle:
     y: float
     w: int
     h: int
+    speed_offset_units: float = 0.0
     passed: bool = False
 
     @property
@@ -72,11 +87,15 @@ class DinoEnv(gym.Env):
         self._episode_max_spawn_gap_px = int(self.config.max_spawn_gap_px)
         self._episode_obstacle_scale = 1.0
         self._episode_observation_noise = float(self.config.observation_noise)
+        self._episode_index = -1
+        self._last_spawn_kind: str | None = None
+        self._same_kind_streak = 0
         self._action_buffer: list[int] = []
         self._observation_buffer: list[np.ndarray] = []
 
     def reset(self, *, seed: int | None = None, options: dict[str, Any] | None = None):
         super().reset(seed=seed)
+        self._episode_index += 1
         self.floor_y = self.config.screen_height - self.config.ground_height
         self.player_y = float(self.floor_y - self.config.stand_height)
         self.player_vy = 0.0
@@ -88,6 +107,8 @@ class DinoEnv(gym.Env):
         self._episode_return = 0.0
         self._episode_elapsed_time = 0.0
         self._obstacles = []
+        self._last_spawn_kind = None
+        self._same_kind_streak = 0
         self._sample_episode_parameters()
         self._spawn_timer = max(float(self.config.initial_obstacle_delay_s), self._next_spawn_delay())
         observation = self._get_observation()
@@ -118,7 +139,7 @@ class DinoEnv(gym.Env):
 
         reward = self.config.survival_reward
         if passed_now:
-            reward += self.config.pass_reward
+            reward += self._pass_obstacle_reward()
         reward += self._action_shaping_reward(requested_action)
 
         terminated = False
@@ -166,22 +187,36 @@ class DinoEnv(gym.Env):
         width: int | None = None,
         height: int | None = None,
         y: float | None = None,
+        speed_offset_units: float = 0.0,
     ) -> SimObstacle:
         x = float(self.config.screen_width + 15 if x is None else x)
+        screen_scale = float(self.config.screen_height) / 150.0
         if kind == "bird":
-            width = width or self._sample_scaled_dimension(28, 38, self._episode_obstacle_scale)
-            height = height or self._sample_scaled_dimension(18, 28, self._episode_obstacle_scale)
-            y = float(
-                y
-                if y is not None
-                else self.floor_y - self._sample_scaled_dimension(56, 82, self._episode_obstacle_scale)
-            )
+            # Chromium sprite definition (normal mode): bird = 46x40, y in {100, 75, 50}.
+            base_width = max(6, int(round(46 * screen_scale)))
+            base_height = max(6, int(round(40 * screen_scale)))
+            width = width or max(6, int(round(base_width * self._episode_obstacle_scale)))
+            height = height or max(6, int(round(base_height * self._episode_obstacle_scale)))
+            if y is None:
+                base_levels = [100, 75, 50]
+                level = int(self.np_random.choice(base_levels))
+                level = int(round(level * screen_scale))
+                y = float(max(0, min(self.floor_y - 8, level)))
+            else:
+                y = float(y)
         else:
-            width = width or self._sample_scaled_dimension(18, 36, self._episode_obstacle_scale)
-            height = height or self._sample_scaled_dimension(34, 58, self._episode_obstacle_scale)
+            # Chromium sprite definitions (normal mode):
+            # CACTUS_SMALL = 17x35, CACTUS_LARGE = 25x50.
+            cactus_specs = [(17, 35), (25, 50)]
+            if width is None or height is None:
+                base_w, base_h = cactus_specs[int(self.np_random.integers(0, len(cactus_specs)))]
+                base_w = max(6, int(round(base_w * screen_scale)))
+                base_h = max(6, int(round(base_h * screen_scale)))
+                width = width or max(6, int(round(base_w * self._episode_obstacle_scale)))
+                height = height or max(6, int(round(base_h * self._episode_obstacle_scale)))
             y = float(y if y is not None else self.floor_y - height)
 
-        obstacle = SimObstacle(kind=kind, x=x, y=y, w=width, h=height)
+        obstacle = SimObstacle(kind=kind, x=x, y=y, w=width, h=height, speed_offset_units=float(speed_offset_units))
         self._obstacles.append(obstacle)
         return obstacle
 
@@ -212,17 +247,70 @@ class DinoEnv(gym.Env):
             self.player_y = float(self.floor_y - height)
 
     def _advance_obstacles(self, dt: float) -> None:
-        speed = self.current_speed
         for obstacle in self._obstacles:
-            obstacle.x -= speed * dt
+            # Chromium-like per-obstacle speed offset (notably birds).
+            obstacle_speed = self.current_speed + obstacle.speed_offset_units * float(self.config.speed_unit_px_s)
+            obstacle.x -= max(1.0, obstacle_speed) * dt
 
     def _maybe_spawn_obstacle(self, dt: float) -> None:
         self._spawn_timer -= dt
         if self._spawn_timer > 0:
             return
-        kind = "bird" if self.np_random.random() < self._episode_bird_probability and self.current_speed > 360 else "cactus"
-        self.spawn_obstacle(kind=kind)
-        self._spawn_timer = self._next_spawn_delay()
+        kind = self._select_spawn_kind()
+        obstacle = self._spawn_with_chromium_rules(kind)
+        self._record_spawn_kind(kind)
+        self._spawn_timer = self._next_spawn_delay(obstacle)
+
+    def _select_spawn_kind(self) -> str:
+        # Chromium-like bird gating: appears only at higher speeds.
+        bird_min_speed = float(self.config.bird_min_speed_units) * float(self.config.speed_unit_px_s)
+        can_spawn_bird = self.current_speed >= bird_min_speed
+        choose_bird = can_spawn_bird and self.np_random.random() < self._episode_bird_probability
+        candidate = "bird" if choose_bird else "cactus"
+        # Avoid long same-kind runs (similar intent to Chromium duplicate checks).
+        if self._same_kind_streak >= int(self.config.max_same_obstacle_streak) and self._last_spawn_kind == candidate:
+            if candidate == "bird":
+                return "cactus"
+            if can_spawn_bird:
+                return "bird"
+        return candidate
+
+    def _spawn_with_chromium_rules(self, kind: str) -> SimObstacle:
+        if kind == "bird":
+            return self.spawn_obstacle(kind="bird", speed_offset_units=0.8)
+
+        # Chromium-like cactus grouping at higher speeds (multipleSpeed around 4.5-7).
+        speed_units = self.current_speed / max(1.0, float(self.config.speed_unit_px_s))
+        base_w, base_h = ((17, 35) if self.np_random.random() < 0.5 else (25, 50))
+        screen_scale = float(self.config.screen_height) / 150.0
+        base_w = max(6, int(round(base_w * screen_scale * self._episode_obstacle_scale)))
+        base_h = max(6, int(round(base_h * screen_scale * self._episode_obstacle_scale)))
+
+        group_len = 1
+        if speed_units >= float(self.config.cactus_cluster_high_speed_units):
+            group_len = int(self.np_random.integers(1, int(self.config.cactus_cluster_max_len_high_speed) + 1))
+        elif speed_units >= float(self.config.cactus_cluster_min_speed_units):
+            group_len = int(self.np_random.integers(1, int(self.config.cactus_cluster_max_len_mid_speed) + 1))
+
+        # Chromium-like cactus grouping: spawn individual obstacles in a cluster.
+        gap_between = max(2, int(round(3 * screen_scale)))
+        first = self.spawn_obstacle(kind="cactus", width=base_w, height=base_h)
+        last_right = first.right
+        for _ in range(group_len - 1):
+            x = float(last_right + gap_between)
+            follower = self.spawn_obstacle(kind="cactus", x=x, width=base_w, height=base_h)
+            last_right = follower.right
+
+        # Use total cluster span as reference for subsequent gap timing.
+        cluster_span = int(last_right - first.left)
+        return SimObstacle(kind="cactus", x=first.x, y=first.y, w=cluster_span, h=first.h)
+
+    def _record_spawn_kind(self, kind: str) -> None:
+        if self._last_spawn_kind == kind:
+            self._same_kind_streak += 1
+        else:
+            self._same_kind_streak = 1
+        self._last_spawn_kind = kind
 
     def _sample_spawn_gap(self) -> float:
         min_gap = self._episode_min_spawn_gap_px
@@ -231,8 +319,19 @@ class DinoEnv(gym.Env):
             max_gap = min_gap + 20
         return float(self.np_random.integers(min_gap, max_gap + 1))
 
-    def _next_spawn_delay(self) -> float:
-        gap_px = self._sample_spawn_gap() * float(self.config.gap_coefficient)
+    def _next_spawn_delay(self, obstacle: SimObstacle | None = None) -> float:
+        if obstacle is None:
+            gap_px = self._sample_spawn_gap() * float(self.config.gap_coefficient)
+            return gap_px / max(1.0, self.current_speed)
+
+        # Chromium-like gap model:
+        # min_gap ~= obstacle_width * speed + type_min_gap * gap_coefficient,
+        # with speed measured in Dino "speed units" (px/frame scale).
+        speed_units = self.current_speed / max(1.0, float(self.config.speed_unit_px_s))
+        type_min_gap = 150.0 if obstacle.kind == "bird" else 120.0
+        min_gap_px = obstacle.w * speed_units + type_min_gap * float(self.config.gap_coefficient)
+        max_gap_px = min_gap_px * 1.5
+        gap_px = float(self.np_random.uniform(min_gap_px, max_gap_px))
         return gap_px / max(1.0, self.current_speed)
 
     def _check_collision(self) -> bool:
@@ -285,7 +384,15 @@ class DinoEnv(gym.Env):
         px, py, _, _ = self._player_rect()
         if self.ducking and self.grounded:
             return [Rect(int(px + 1), int(py + 18), 55, 25)]
-        return [Rect(int(px + 22), int(py + 0), 17, 16)]
+        # Chromium running collision boxes (trex.ts).
+        return [
+            Rect(int(px + 22), int(py + 0), 17, 16),
+            Rect(int(px + 1), int(py + 18), 30, 9),
+            Rect(int(px + 10), int(py + 35), 14, 8),
+            Rect(int(px + 1), int(py + 24), 29, 5),
+            Rect(int(px + 5), int(py + 30), 21, 4),
+            Rect(int(px + 9), int(py + 34), 15, 4),
+        ]
 
     @staticmethod
     def _rects_intersect(a: Rect, b: Rect) -> bool:
@@ -350,67 +457,17 @@ class DinoEnv(gym.Env):
         return self._delay_observation(obs)
 
     def _action_shaping_reward(self, action: int) -> float:
-        if not self.config.enable_teacher_shaping:
-            return 0.0
-
-        teacher_action = DinoRulePolicy(DinoVisionConfig(min_action_interval_s=0.0)).decide(
-            self._teacher_state(),
-            now=float(self.elapsed_steps) * float(self.config.step_interval_s),
-        ).action
-        if teacher_action is PolicyAction.NOOP:
-            if action == 1:
-                return self.config.unnecessary_jump_penalty
-            if action == 2:
-                return self.config.unnecessary_duck_penalty
-            return 0.0
-
-        if action == int(self._policy_action_index(teacher_action)):
-            return self.config.teacher_match_reward
-        if action == 0:
-            return self.config.missed_action_penalty
-        return self.config.teacher_mismatch_penalty
-
-    @staticmethod
-    def _policy_action_index(action: PolicyAction) -> int:
-        if action is PolicyAction.JUMP:
-            return 1
-        if action is PolicyAction.DUCK:
-            return 2
+        if action == 1 and not self.grounded:
+            return self.config.unnecessary_jump_penalty
+        if action == 2 and not self.grounded:
+            return self.config.unnecessary_duck_penalty
+        if action != 0:
+            return self.config.action_penalty
         return 0
 
-    def _teacher_state(self) -> VisionState:
-        frame = np.zeros((self.config.screen_height, self.config.screen_width, 3), dtype=np.uint8)
-        playfield = frame.copy()
-        player_x, player_y, player_w, player_h = self._player_rect()
-        player_box = Rect(int(player_x), int(player_y), int(player_w), int(player_h))
-        obstacles = [self._teacher_obstacle(obstacle, player_box) for obstacle in self._obstacles]
-        obstacles = [obstacle for obstacle in obstacles if obstacle is not None]
-        nearest = obstacles[0] if obstacles else None
-        return VisionState(
-            timestamp=self._episode_elapsed_time,
-            frame=frame,
-            playfield=playfield,
-            player_box=player_box,
-            ground_y=int(self.floor_y),
-            obstacles=obstacles,
-            nearest_obstacle=nearest,
-            nearest_distance_px=nearest.distance_px if nearest is not None else None,
-            estimated_speed_px_s=self.current_speed,
-            estimated_player_vy_px_s=float(self.player_vy),
-            game_over=False,
-        )
-
-    @staticmethod
-    def _teacher_obstacle(obstacle: SimObstacle, player_box: Rect) -> ObstacleDetection | None:
-        rect = Rect(int(obstacle.left), int(obstacle.top), int(obstacle.w), int(obstacle.h))
-        if rect.right < player_box.x - 40:
-            return None
-        return ObstacleDetection(
-            rect=rect,
-            label=obstacle.kind,
-            distance_px=max(0.0, float(rect.x - player_box.right)),
-            speed_px_s=0.0,
-        )
+    def _pass_obstacle_reward(self) -> float:
+        speed_units = self.current_speed / max(1.0, float(self.config.speed_unit_px_s))
+        return float(self.config.pass_reward + self.config.speed_pass_reward_scale * speed_units)
 
     def _delay_observation(self, observation: np.ndarray) -> np.ndarray:
         if not self._observation_buffer:
@@ -420,6 +477,20 @@ class DinoEnv(gym.Env):
         return self._observation_buffer.pop(0)
 
     def _sample_episode_parameters(self) -> None:
+        if self.config.curriculum_learning:
+            speed_min, speed_max = self._curriculum_speed_range()
+            self._episode_base_speed = float(self.np_random.uniform(speed_min, speed_max))
+            self._episode_speed_acceleration = float(self.config.speed_acceleration)
+            self._episode_max_speed = float(max(self._episode_base_speed, speed_max))
+            self._episode_gravity = float(self.config.gravity)
+            self._episode_jump_velocity = float(self.config.jump_velocity)
+            self._episode_bird_probability = float(self.config.bird_probability)
+            self._episode_min_spawn_gap_px = int(self.config.min_spawn_gap_px)
+            self._episode_max_spawn_gap_px = int(self.config.max_spawn_gap_px)
+            self._episode_obstacle_scale = 1.0
+            self._episode_observation_noise = float(self.config.observation_noise)
+            return
+
         if not self.config.domain_randomization:
             self._episode_base_speed = float(self.config.base_speed)
             self._episode_speed_acceleration = float(self.config.speed_acceleration)
@@ -448,6 +519,16 @@ class DinoEnv(gym.Env):
             self._episode_max_spawn_gap_px = self._episode_min_spawn_gap_px + 20
         self._episode_obstacle_scale = self._sample_scaled_value(1.0, strength * 0.35)
         self._episode_observation_noise = float(self.config.observation_noise)
+
+    def _curriculum_speed_range(self) -> tuple[float, float]:
+        episode = max(0, self._episode_index)
+        if episode < self.config.curriculum_low_episodes:
+            return self.config.curriculum_low_speed_min, self.config.curriculum_low_speed_max
+        if episode < self.config.curriculum_medium_episodes:
+            return self.config.curriculum_medium_speed_min, self.config.curriculum_medium_speed_max
+        if episode < self.config.curriculum_high_episodes:
+            return self.config.curriculum_high_speed_min, self.config.curriculum_high_speed_max
+        return self.config.curriculum_random_speed_min, self.config.curriculum_random_speed_max
 
     def _sample_scaled_value(self, value: float, jitter: float) -> float:
         if jitter <= 0:
@@ -499,6 +580,4 @@ class DinoEnv(gym.Env):
         return frame
 
 
-# Compatibility alias kept for older imports/tests while DinoEnv becomes the
-# canonical Gymnasium environment used by the PPO path.
 DinoSimEnv = DinoEnv
