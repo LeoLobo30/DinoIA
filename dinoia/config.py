@@ -10,8 +10,13 @@ class SimConfig:
     ground_height: int = 10
     step_interval_s: float = 1.0 / 30.0
     physics_step_interval_s: float = 1.0 / 60.0
+    target_fps: float = 60.0
+    frame_time_jitter: float = 0.1
+    frame_time_spike_probability: float = 0.03
+    frame_time_spike_scale: float = 1.8
     player_x: int = 50
     player_width: int = 44
+    duck_width: int = 59
     stand_height: int = 47
     duck_height: int = 25
     gravity: float = 2160.0
@@ -21,6 +26,8 @@ class SimConfig:
     speed_acceleration: float = 60.0
     speed_increment: float = 7.5
     speed_unit_px_s: float = 60.0
+    speed_increment_interval_score: float = 100.0
+    distance_scale_per_step: float = 0.025
     curriculum_learning: bool = False
     curriculum_low_episodes: int = 1_000
     curriculum_medium_episodes: int = 3_000
@@ -41,6 +48,10 @@ class SimConfig:
     bird_probability: float = 0.2
     bird_min_speed_units: float = 8.5
     max_same_obstacle_streak: int = 2
+    max_bird_streak: int = 1
+    prohibit_bird_after_bird: bool = True
+    max_obstacles_on_screen: int = 3
+    recent_obstacle_memory: int = 4
     cactus_cluster_min_speed_units: float = 4.5
     cactus_cluster_high_speed_units: float = 7.0
     cactus_cluster_max_len_mid_speed: int = 2
