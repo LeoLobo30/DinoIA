@@ -1,5 +1,7 @@
-from dinoia.cli import run_results
+from __future__ import annotations
+
+from dinoia.cli import main
 
 
 if __name__ == "__main__":
-    run_results()
+    raise SystemExit(main(["results"]))
