@@ -31,7 +31,7 @@ def run_doctor(output_dir: str | Path | None = None) -> DoctorReport:
         DoctorCheck("Python", "OK", platform.python_version()),
         DoctorCheck("Platform", "OK", platform.platform()),
     ]
-    for module_name in ("numpy", "cv2", "gymnasium", "stable_baselines3", "sb3_contrib", "torch"):
+    for module_name in ("numpy", "cv2", "gymnasium", "stable_baselines3", "sb3_contrib", "torch", "selenium"):
         ok, detail = _check_import(module_name)
         checks.append(DoctorCheck(module_name, "OK" if ok else "ERROR", detail))
     checks.append(_check_torch_cuda())

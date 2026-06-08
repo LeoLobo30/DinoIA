@@ -50,6 +50,20 @@ def test_cli_parses_play_sim_dqn():
     assert args.device == "auto"
 
 
+def test_cli_parses_play_real_dqn():
+    args = build_parser().parse_args(
+        ["play-real-dqn", "--best", "--duration", "9", "--url", "chrome://dino/", "--headless"]
+    )
+
+    assert args.command == "play-real-dqn"
+    assert args.best is True
+    assert args.duration == 9.0
+    assert args.url == "chrome://dino/"
+    assert args.headless is True
+    assert args.device == "auto"
+    assert args.no_restart_on_crash is False
+
+
 def test_cli_parses_results():
     args = build_parser().parse_args(["results"])
 

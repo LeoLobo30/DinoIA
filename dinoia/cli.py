@@ -86,6 +86,27 @@ def build_parser() -> argparse.ArgumentParser:
     play_parser.add_argument("--no-display", action="store_true")
     _add_sim_args(play_parser)
 
+    real_play_parser = subparsers.add_parser(
+        "play-real-dqn", help="Run a DQN model in the real Chrome Dino game"
+    )
+    real_play_parser.add_argument("--model-path", type=Path, default=None)
+    real_play_parser.add_argument(
+        "--best", action="store_true", help="Use best_sim_model.zip if available"
+    )
+    real_play_parser.add_argument("--duration", type=float, default=30.0)
+    real_play_parser.add_argument(
+        "--output-dir", type=Path, default=DEFAULT_DQN_ARTIFACTS_DIR
+    )
+    real_play_parser.add_argument(
+        "--device", type=str, default="auto", help="cpu, cuda, cuda:0, gpu, or auto"
+    )
+    real_play_parser.add_argument("--url", type=str, default="chrome://dino/")
+    real_play_parser.add_argument("--chrome-binary", type=str, default=None)
+    real_play_parser.add_argument("--headless", action="store_true")
+    real_play_parser.add_argument("--window-width", type=int, default=1000)
+    real_play_parser.add_argument("--window-height", type=int, default=320)
+    real_play_parser.add_argument("--no-restart-on-crash", action="store_true")
+
     results_parser = subparsers.add_parser("results", help="Summarize DQN artifacts")
     results_parser.add_argument(
         "--output-dir", type=Path, default=DEFAULT_DQN_ARTIFACTS_DIR
@@ -193,6 +214,34 @@ def run_play_sim_dqn(args):
     return result
 
 
+def run_play_real_dqn(args):
+    from .real_game import play_real_dqn
+
+    result = play_real_dqn(
+        model_path=args.model_path,
+        best=args.best,
+        duration=args.duration,
+        output_dir=args.output_dir,
+        device=args.device,
+        url=args.url,
+        chrome_binary=args.chrome_binary,
+        headless=args.headless,
+        window_width=args.window_width,
+        window_height=args.window_height,
+        restart_on_crash=not args.no_restart_on_crash,
+    )
+    print(
+        "play-real-dqn: steps={steps} crashes={crashes} passed={passed} episodes={episodes} url={url}".format(
+            steps=result.steps,
+            crashes=result.crashes,
+            passed=result.passed_obstacles,
+            episodes=result.episodes,
+            url=result.url,
+        )
+    )
+    return result
+
+
 def run_results(args):
     from .dqn_agent import summarize_dqn
 
@@ -239,6 +288,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "play-sim-dqn":
         run_play_sim_dqn(args)
+        return 0
+    if args.command == "play-real-dqn":
+        run_play_real_dqn(args)
         return 0
     if args.command == "results":
         run_results(args)
